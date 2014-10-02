@@ -42,7 +42,15 @@ class VCF:
 					self.header.append(line)
 					self.header_line_count += 1
 				else:
+					self.num_samples = len(line.strip().split('\t')) - 9
 					break
+
+		try:
+			self.samples = self.header[-1].strip().split('\t')[9:]
+
+		except:
+			print('Warning: Could not find sample names in header. Header may be missing from supplied VCF.')
+			self.samples = ['NA'] * self.num_samples
 
 
 	def split(self, writeSNP=True, writeINDEL=True):
@@ -78,13 +86,13 @@ class VCF:
 			indel_out.close()
 
 
-	def filter(self, output, quality=0, variant_type=['snp', 'indel'], genotype=False, chrom=False, column=1, coords=[0,1e10]):
+	def filter(self, output, quality=0, variant_type=['snp', 'indel'], genotype=False, chrom=False, columns=(), coords=(0,1e10) ):
 		"""
 		Class method to generate a new vcf file containing only calls passing a specified filter.
-		If genotype as specified (choices: homozygous, heterozygous) you must also specify which column
-		to check for multi-sample vcf files. By default, the first column will be checked. Current behavior
-		will check the genotype of the sample in that column, but will write the data for all samples
-		if the specified column passes the genotype filter.
+		If genotype as specified (choices: homozygous, heterozygous) you must also specify a range of columns
+		(as a tuple) to check for multi-sample vcf files. By default, all columns will be checked. Current behavior
+		for genotype=heterozyous will output variants if ANY sample is heterozygous at that locus. For genotype=
+		homozygous, the line is written to output only if ALL samples are homozgous at that site.
 		"""
 
 		number_checked = 0
@@ -115,11 +123,19 @@ class VCF:
 						# check if genotype filter set and, if so, is current line of the correct genotype?
 						if genotype:
 							#print('%s: checking genotype' %ind)
-							current_line_genotype = current_line.GENOTYPE[ column - 1 ].split(':')[0]
-							if current_line_genotype.split('/')[0] == current_line_genotype.split('/')[1]:
-								current_line_genotype = 'homozygous'
-							else:
-								current_line_genotype = 'heterozygous'
+							if columns == ():
+								columns = (0, len(self.samples))
+							print('columns: %s,%s' %(columns[0], columns[1]))
+							current_line_genotype = [ current_line.GENOTYPE[ column ].split(':')[0] for column in range(columns[0], columns[1]) ]
+							for entry in current_line_genotype:
+								print(entry)
+								if entry.split('/')[0] != entry.split('/')[1]:
+									current_line_genotype = 'heterozygous'
+									print('heterozygous')
+									break
+								else:
+									print('homozygous')
+									current_line_genotype = 'homozygous'
 							#print('genotype = ' + current_line_genotype)
 							if current_line_genotype != genotype:
 								#print('%s: failed genotype test' %ind)

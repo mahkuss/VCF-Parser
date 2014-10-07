@@ -175,3 +175,37 @@ class VCF:
 		plt.ylabel('Frequency')
 		plt.show()
 
+	def randomSample(self, num, output=False):
+		"""
+		Class method to generate a specified number of randomly samples calls from a VCF file.
+		This can be useful for manually checking quality of post-filter calls in IGV.
+		"""
+
+		import random
+
+		# first find number of lines in VCF file
+		num_lines = sum( 1 for line in open(self.filename) if line.rstrip() )
+		
+		# randomly select specified number of lines out of file, not including header
+		return_lines = random.sample( xrange( self.header_line_count + 1, num_lines ), num )
+		print(return_lines)
+
+		# iterate through input vcf file and print the randomly selected lines (or write to file if output path provided)
+		if output:
+			outfile = open(output, 'w')
+		with open(self.filename, 'r') as vcf:
+			for ind, line in enumerate(vcf):
+				if ind < self.header_line_count:
+					if output:
+						outfile.write(line)
+					else:
+						continue
+
+				elif ind in return_lines:
+					if output:
+						outfile.write(line)
+					else:
+						print(line)
+
+		if output:
+			outfile.close()

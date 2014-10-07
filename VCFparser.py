@@ -187,8 +187,7 @@ class VCF:
 		num_lines = sum( 1 for line in open(self.filename) if line.rstrip() )
 		
 		# randomly select specified number of lines out of file, not including header
-		return_lines = random.sample( xrange( self.header_line_count + 1, num_lines ), num )
-		print(return_lines)
+		return_lines = random.sample( xrange( self.header_line_count + 1, num_lines + 1 ), num )
 
 		# iterate through input vcf file and print the randomly selected lines (or write to file if output path provided)
 		if output:

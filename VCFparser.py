@@ -279,8 +279,8 @@ class VCF:
 							for key, value in rules.items():
 								check = variants.INFO[ key ]
 								if ( value[0] == '==' and check != value[1] ) or\
-								( value[0] == '>' and check <= value[1] ) or\
-								(value[0] == '<' and check >= value[1] ):
+								( value[0] == '>' and check > value[1] ) or\
+								(value[0] == '<' and check < value[1] ):
 									pass_rule = False
 									# print(variants.INFO)
 									# print('failed: %s %s %s' %(key, value[0], value[1]))

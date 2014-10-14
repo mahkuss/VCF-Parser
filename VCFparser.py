@@ -2,21 +2,46 @@
 Python tool for parsing VCF files.
 """
 
+import numpy as np
+import re
+
 class VCFentry:
 	"""
 	Class object to parse and represent a single entry in a VCF file.
 	"""
 	def __init__(self, entry):
 		fields = entry.strip().split('\t')
-		self.CHROM, self.POS, self.ID, self.REF, self.ALT, self.QUAL, self.FILTER, self.INFO =\
+		self.CHROM, self.POS, self.ID, self.REF, self.ALT, self.QUAL, self.FILTER, self.rawINFO =\
 		fields[:8]
 
+		self.INFO = { key: float(value) if ',' not in value else (float(x) for x in value.split(',')) for key, value in [ stat.split('=') for stat in self.rawINFO.split(';') ] } 
 		self.POS = int(self.POS)
 		self.QUAL = float(self.QUAL)
+
+		def genotypeClass(genotype):
+			"""
+			Helper function in VCFentry __init__ method to determine if variant is het, homo ref, or homo alt.
+			"""
+			if '/' in genotype: #unphased
+				allele1, allele2 = genotype.split('/')
+			elif '|' in genotype: # phased
+				allele1, allele2 = genotype.split('|')
+			else:
+				return(None) # input to function is not a valid genotype
+
+			if allele1 != allele2:
+				return('heterozygous')
+			elif allele1 == '0':
+				return ('homozygous_ref')
+			elif allele1 == '.':
+				return('no_data')
+			else:
+				return('homozygous_alt')
 
 		if len(fields) > 8:
 			self.FORMAT = fields[8]
 			self.GENOTYPE = [ genotype for genotype in fields[9:] ]
+			self.GENOTYPE_CLASS = [ genotypeClass( genotype.split(':')[0] ) for genotype in fields[9:] ]
 
 		if ( len(self.REF) > 1 ) or ( len(self.ALT) > 1 ):
 			self.TYPE = 'indel'
@@ -43,6 +68,8 @@ class VCF:
 					self.header_line_count += 1
 				else:
 					self.num_samples = len(line.strip().split('\t')) - 9
+					self.format = VCFentry(line).FORMAT
+					self.info = [ key for key in VCFentry(line).INFO.keys() ]
 					break
 
 		try:
@@ -208,3 +235,89 @@ class VCF:
 
 		if output:
 			outfile.close()
+
+
+	def VCFstats(self, quality=0, chrom='ALL', hfilter=False):
+		"""
+		VCF class method to report statistics on contents of VCF file. Reports separate counts of heterozygous and
+		homozygous variants above a specified quality threshold broken down by sample in a multi-sample VCF. Also 
+		report mean and sd of quality scores for each category.
+		"""
+
+		# initialize dictionaries to hold data
+		dict_categories = ['heterozygous', 'homozygous_ref', 'homozygous_alt', 'no_data', 'analyzed']
+
+		data = []
+
+		failed_filter = 0
+
+		for i in range( self.num_samples ):
+			data.append( dict() )
+			for cat in dict_categories:
+				data[i][cat] = 0
+				data[i]['qual'] = {'heterozygous': [], 'homozygous_alt': []}
+
+
+		# read VCF line by line
+		with open(self.filename, 'r') as vcf:
+			for ind, line in enumerate(vcf):
+				if ind < self.header_line_count:
+					continue
+
+				else:
+					variants = VCFentry( line )
+
+					if chrom != 'ALL' and variants.CHROM != chrom:
+						failed_filter += 1
+						continue
+
+					if hfilter:
+						rules = { rule[0].strip():( rule[1].strip(), float(rule[2].strip() ) ) 
+									for rule in [ re.split('(==|>|<)', arg ) for arg in hfilter ] }
+						pass_rule = True
+						try:
+							for key, value in rules.items():
+								check = variants.INFO[ key ]
+								if ( value[0] == '==' and check != value[1] ) or\
+								( value[0] == '>' and check <= value[1] ) or\
+								(value[0] == '<' and check >= value[1] ):
+									pass_rule = False
+									# print(variants.INFO)
+									# print('failed: %s %s %s' %(key, value[0], value[1]))
+									break
+						except KeyError:
+							print('WARNING: Invalid filter rule ignored on line %s: %s %s %s' %(ind, key, value[0], value[1]))
+							continue
+						if not pass_rule:
+							failed_filter += 1
+							continue
+
+					if variants.QUAL >= quality:
+					# for each line loop from 0 to number of samples
+						for sample in range(self.num_samples):
+
+						# at each step in loop: 
+						#	-increment an accumulator for homozygous ref, homozygous alt, and heterozygous calls
+						# 	 indexed by sample and chromosome; maintain separate count for 'no_data'
+						#	-add current QUAL to either het or homo list
+							data[ sample ][ variants.GENOTYPE_CLASS[ sample ] ] += 1
+							if variants.GENOTYPE_CLASS[ sample ] not in ['no_data', 'homozygous_ref', None]:
+								data[ sample ][ 'analyzed' ] += 1
+								data[ sample ][ 'qual' ][ variants.GENOTYPE_CLASS[ sample ] ].append( variants.QUAL )
+
+					else:
+						failed_filter += 1
+
+		# calculate mean and sd of qual score categories
+		for idx in range( len(data) ):
+			print(idx)
+			print('Analyzed: %s' %data[idx]['analyzed'])
+			print('Homozygous Reference: %s' %data[idx]['homozygous_ref'])
+			print('Homozygous Alt: %s' %data[idx]['homozygous_alt'])
+			print('Homozygous Quality: %s, %s' %( np.mean(data[idx]['qual']['homozygous_alt']), np.std(data[idx]['qual']['homozygous_alt']) ) ) 
+			print('Heterozygous: %s' %data[idx]['analyzed'])
+			print('Heterozygous Quality: %s, %s' %( np.mean(data[idx]['qual']['heterozygous']), np.std(data[idx]['qual']['heterozygous']) ) )
+		print('Failed Filter: %s' %failed_filter)
+
+		return data
+		# format and report output

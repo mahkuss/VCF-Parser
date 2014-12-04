@@ -1,5 +1,7 @@
 """
 Python tool for parsing VCF files.
+
+Author: Rob Moccia
 """
 
 import numpy as np

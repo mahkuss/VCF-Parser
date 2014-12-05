@@ -1,7 +1,15 @@
-vcf = VCF('/home/rob/data/RNAseq/Naoki/wgs/c9orfKOMouse.vcf')
+import sys
+sys.path.append('/home/rob/code/python/VCF/')
+import VCFparser
+from pandas import Series, DataFrame
+import pandas as pd
+
+
+vcf = VCFparser.VCF('/home/rob/data/RNAseq/Naoki/wgs/c9orfKOMouse.vcf')
 SNPstats = vcf.VCFstats(mode='snp')
 SNPstats400 = vcf.VCFstats(quality=400, mode='snp')
 #SNPstats400 = vcf.VCFstats(quality=400, chrom='chr4')
+#SNPfilter = vcf.VCFstats(mode='snp', hfilter=['QD < 2', 'FS > 60', 'MQ < 40', 'MQRankSum < -12.5', 'ReadPosRankSum < -8.0'], output=True)
 
 def filt(x):
 	return x < 2000
@@ -38,9 +46,6 @@ fig2.suptitle('Homozygous SNPs', fontsize=22)
 
 fig2.show()
 
-
-from pandas import Series, DataFrame
-import pandas as pd
 
 chromosomes = ['chr1', 'chr2', 'chr3', 'chr4', 'chr5', 'chr6', 'chr7', 'chr8', 'chr9', 'chr10',
 				'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18', 'chr19', 'chrX']

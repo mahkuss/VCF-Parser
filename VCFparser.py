@@ -45,14 +45,14 @@ class VCFentry:
 			self.GENOTYPE = [ genotype for genotype in fields[9:] ]
 			self.GENOTYPE_CLASS = [ genotypeClass( genotype.split(':')[0] ) for genotype in fields[9:] ]
 
-		if ( len(self.REF) > 1 ) or ( len(self.ALT) > 1 ):
+		if ( len(self.REF) > 1 ) or ( True in [ len(alt) > 1 for alt in self.ALT.split(',') ] ):
 			self.TYPE = 'indel'
 		else:
 			self.TYPE = 'snp'
 
 	def __str__(self):
-		return '\t'.join([ self.CHROM, self.POS, self.ID, self.REF, self.ALT, self.QUAL,\
-			self.FILTER, self.INFO, self.FORMAT, '\t'.join( [ genotype for genotype in self.GENOTYPE ] ) ] ) + '\n'
+		return '\t'.join([ self.CHROM, str( self.POS ), self.ID, self.REF, self.ALT, str( self.QUAL ),\
+			self.FILTER, self.rawINFO, self.FORMAT, '\t'.join( [ genotype for genotype in self.GENOTYPE ] ) ] ) + '\n'
 
 
 class VCF:
@@ -239,25 +239,52 @@ class VCF:
 			outfile.close()
 
 
-	def VCFstats(self, quality=0, chrom='ALL', hfilter=False):
+	def VCFstats(self, quality=0, chrom='ALL', hfilter=False, mode=False, output=False):
 		"""
 		VCF class method to report statistics on contents of VCF file. Reports separate counts of heterozygous and
 		homozygous variants above a specified quality threshold broken down by sample in a multi-sample VCF. Also 
 		report mean and sd of quality scores for each category.
 		"""
 
-		# initialize dictionaries to hold data
+		## INITIALIZE DICTIONARIES TO HOLD DATA FOR EACH SAMPLE ##
 		dict_categories = ['heterozygous', 'homozygous_ref', 'homozygous_alt', 'no_data', 'analyzed']
 
-		data = []
+		data = [] #  list to aggregate dictionaries
 
-		failed_filter = 0
-
+		# loop through samples in vcf file and create the dict to store number of variants
+		# and quality of homozygous and heterozygous variants
 		for i in range( self.num_samples ):
 			data.append( dict() )
 			for cat in dict_categories:
 				data[i][cat] = 0
 				data[i]['qual'] = {'heterozygous': [], 'homozygous_alt': []}
+
+		## END INITIALIZE DICTIONARIES ##
+
+		# Check output flag: 
+		# if True, make sure hfilter is set or else this option makes no sense -> set it back to False
+		# with appropriate user output; 
+		# otherwise initialize with input vcf header plus added FILTER line storing parameters from hfilter argument
+		if output:
+			if not hfilter:
+				print('Filtered vcf output file requested but no filtering criteria set. Suppressing output.')
+				output=False
+			else:
+				outfileName = 'VCFstats_filter_out.vcf'
+				header_filter_entry = '##FILTER=<ID=VCFstats, Description="' + '; '.join( hfilter ) + '">\n'
+				new_header = list( self.header )
+				new_header.insert( -2, header_filter_entry )
+				with open(outfileName, 'w') as outfile:
+					for line in new_header:
+						outfile.write( line )
+
+				def writeFilteredVcfLine(filename, line, pass_fail):
+					with open(filename, 'a') as outfile:
+						line.FILTER = pass_fail
+						outfile.write( str(line) )
+
+		# initialize counter to track how many lines fail filter
+		failed_filter = 0
 
 
 		# read VCF line by line
@@ -268,6 +295,10 @@ class VCF:
 
 				else:
 					variants = VCFentry( line )
+
+					if mode and variants.TYPE != mode.lower():
+						failed_filter += 1
+						continue
 
 					if chrom != 'ALL' and variants.CHROM != chrom:
 						failed_filter += 1
@@ -292,9 +323,13 @@ class VCF:
 							continue
 						if not pass_rule:
 							failed_filter += 1
+							if output:
+								writeFilteredVcfLine( outfileName, variants, 'VCFstats' )
 							continue
 
 					if variants.QUAL >= quality:
+						if output:
+							writeFilteredVcfLine( outfileName, variants, 'PASS' )
 					# for each line loop from 0 to number of samples
 						for sample in range(self.num_samples):
 
@@ -309,6 +344,8 @@ class VCF:
 
 					else:
 						failed_filter += 1
+						if output:
+							writeFilteredVcfLine( outfileName, variants, 'VCFstats' )
 
 		# calculate mean and sd of qual score categories
 		for idx in range( len(data) ):
@@ -323,3 +360,80 @@ class VCF:
 
 		return data
 		# format and report output
+
+	def physicalDistribution(self, resolution=5e5, genome='mm10'):
+		"""
+		VCF class method to count homozygous and heterozygous variants mapping into bins along the physical length of
+		chromosomes. Bin size is passed through the 'resolution' argument and is measured in bp (default 500,000 bp).
+		Default genome is mm10, but can pass a filepointer to a tab-delimited file listing chromosomes in col1 and length
+		in col2 to change this. Note that chromosome names in this file must match the names in the vcf file.
+		"""
+
+		BIN_SIZE = resolution
+		if genome == 'mm10':
+			CHROM_DATA = '/home/rob/data/RNAseq/Naoki/neo_cassette/mm10chromInfo.txt'
+		else:
+			CHROM_DATA = genome
+
+		# load in chromosome lengths to dictionary
+		ch_length = dict()
+
+		with open( CHROM_DATA, 'r' ) as f:
+			for line in f:
+				chrom = line.strip().split( '\t' )[:2]
+				ch_length[ chrom[0] ] = int( chrom[1] )
+
+		# build bins and create dictionaries to hold number of homozygous and heterozygous snps in each bin
+		# data structure is a list of dicts, one for each sample in the vcf, with each dict holding two more
+		# dicts with keys "het" and "homo" for heterozygous and homozygous snps, respectively
+		# within the het and homo dicts will be keys corresponding to each chromosome which then hold a list
+		# of integers representing snp counts indexed by chromosomal coordinate start of the corresponding bin
+
+		snp = []
+		#totalGenes = dict()
+		#normalized = dict()
+
+		for sample in range( self.num_samples ):
+			new_dict = {'heterozygous': dict(), 'homozygous_alt': dict() }
+			for key, value in ch_length.items():
+				new_dict[ 'heterozygous' ][ key ] = [0] * int( (value // BIN_SIZE) + 1 )
+				new_dict[ 'homozygous_alt' ][ key ] = [0] * int( (value // BIN_SIZE) + 1 )
+			#	totalGenes[key] = [0] * int( (value // BIN_SIZE) + 1 )
+			#	normalized[key] = [0] * int( (value // BIN_SIZE) + 1 )
+
+			snp.append( new_dict )
+
+		for key in snp[ 0 ][ 'heterozygous' ].keys():
+			print( key + ': ' + str( len( snp[ 0 ][ 'heterozygous' ][ key ] ) ) )
+
+		print( len(snp) )
+
+		lines = 0
+
+		with open(self.filename, 'r') as f:
+			for ind, line in enumerate(f):
+				if ind < self.header_line_count:
+					continue
+				else:
+					lines += 1
+					data = VCFentry( line )
+					if data.FILTER == 'PASS' or data.FILTER == '.':
+						for sample in range(self.num_samples):
+							try:
+								# print(data.GENOTYPE_CLASS[ sample ])
+								# print(data.CHROM)
+								# print( int(data.POS // BIN_SIZE ))
+								# print( snp[ sample ][ data.GENOTYPE_CLASS[ sample ] ][ data.CHROM ][ int( data.POS // BIN_SIZE ) ] )
+								snp[ sample ][ data.GENOTYPE_CLASS[ sample ] ][ data.CHROM ][ int( data.POS // BIN_SIZE ) ] += 1 #sample will need to be argument specifying which column in multi-sample vcf
+								# print( snp[ sample ][ data.GENOTYPE_CLASS[ sample ] ][ data.CHROM ][ int( data.POS // BIN_SIZE ) ] )
+							except KeyError:
+								print('genotype class not in index: %s', data.GENOTYPE_CLASS[ sample ])
+								continue
+
+		print( 'lines: %s' %lines )
+		print( snp[ 0 ]['heterozygous']['chr5'])
+		print( snp[ 1 ]['heterozygous']['chr5'])
+		print( snp[ 2 ]['heterozygous']['chr5'])
+		print( snp[ 3 ]['heterozygous']['chr5'])
+
+		return( snp )

@@ -6,49 +6,76 @@ Author: Rob Moccia
 
 import numpy as np
 import re
+import sys
 
 class VCFentry:
 	"""
 	Class object to parse and represent a single entry in a VCF file.
 	"""
 	def __init__(self, entry):
-		fields = entry.strip().split('\t')
-		self.CHROM, self.POS, self.ID, self.REF, self.ALT, self.QUAL, self.FILTER, self.rawINFO =\
-		fields[:8]
-
-		self.INFO = { key: float(value) if ',' not in value else (float(x) for x in value.split(',')) for key, value in [ stat.split('=') for stat in self.rawINFO.split(';') ] } 
-		self.POS = int(self.POS)
-		self.QUAL = float(self.QUAL)
-
-		def genotypeClass(genotype):
-			"""
-			Helper function in VCFentry __init__ method to determine if variant is het, homo ref, or homo alt.
-			"""
-			if '/' in genotype: #unphased
-				allele1, allele2 = genotype.split('/')
-			elif '|' in genotype: # phased
-				allele1, allele2 = genotype.split('|')
-			else:
-				return(None) # input to function is not a valid genotype
-
-			if allele1 != allele2:
-				return('heterozygous')
-			elif allele1 == '0':
-				return ('homozygous_ref')
-			elif allele1 == '.':
-				return('no_data')
-			else:
-				return('homozygous_alt')
-
-		if len(fields) > 8:
-			self.FORMAT = fields[8]
-			self.GENOTYPE = [ genotype for genotype in fields[9:] ]
-			self.GENOTYPE_CLASS = [ genotypeClass( genotype.split(':')[0] ) for genotype in fields[9:] ]
-
-		if ( len(self.REF) > 1 ) or ( True in [ len(alt) > 1 for alt in self.ALT.split(',') ] ):
-			self.TYPE = 'indel'
+		fields = entry.strip().split()
+		if len(fields) < 8:
+			print('Warning: Misformated line detected. Could be extra carriage return at EOF.')
+			self.CHROM, self.POS = [None] * 2
 		else:
-			self.TYPE = 'snp'
+			self.CHROM, self.POS, self.ID, self.REF, self.ALT, self.QUAL, self.FILTER, self.rawINFO =\
+			fields[:8]
+
+			self.INFO = { key: float(value) if ',' not in value else (float(x) for x in value.split(',')) for key, value in [ stat.split('=') for stat in self.rawINFO.split(';') ] } 
+			self.POS = int(self.POS)
+			self.QUAL = float(self.QUAL)
+
+			def genotypeClass(genotype):
+				"""
+				Helper function in VCFentry __init__ method to determine if variant is het, homo ref, or homo alt.
+				(Have since added code to also extract allele/base calls at each position but did not rename
+				function to reflect this additional functionality.)
+				"""
+				if '/' in genotype: #unphased
+					allele1, allele2 = genotype.split('/')
+				elif '|' in genotype: # phased
+					allele1, allele2 = genotype.split('|')
+				else:
+					return(None) # input to function is not a valid genotype
+
+				if allele1 != allele2:
+					return('heterozygous')
+				elif allele1 == '0':
+					return ('homozygous_ref')
+				elif allele1 == '.':
+					return('no_data')
+				else:
+					return('homozygous_alt')
+
+			if len(fields) > 8:
+				self.FORMAT = fields[8]
+				self.GENOTYPE = [ genotype for genotype in fields[9:] ]
+				self.GENOTYPE_CLASS = [ genotypeClass( genotype.split(':')[0] ) for genotype in fields[9:] ]
+				# extract ref/alt calls for each allele and each genotype
+				# using re.split() to ensure proper splitting for both phased and unphased alleles
+				# splitting in 2 steps to improve readability
+				self.ALLELE_CALLS = [ genotype.split(':')[0] if genotype != '.' else 'X/X' for genotype in fields[9:] ]
+				self.ALLELE_CALLS = [ tuple(re.split("[\/]|[\|]", calls)) for calls in self.ALLELE_CALLS ]
+				# create a dictionary base_map that maps allele number (as type str) to the actual base
+				base_map = {'0': self.REF, 'X': 'ND', '.': 'ND'}
+				try:
+					alt_map = {str(allele):base for allele, base in enumerate((alt for alt in self.ALT.split(',')), start=1)}
+					base_map.update(alt_map)
+				except ValueError:
+					pass
+
+				try:
+					self.BASE_CALLS = [ (base_map[x], base_map[y]) for x,y in self.ALLELE_CALLS ]
+				except:
+					print('%s:%s' %(self.CHROM, self.POS))
+					print(self.ALLELE_CALLS)
+					sys.exit()
+
+
+			if ( len(self.REF) > 1 ) or ( True in [ len(alt) > 1 for alt in self.ALT.split(',') ] ):
+				self.TYPE = 'indel'
+			else:
+				self.TYPE = 'snp'
 
 	def __str__(self):
 		return '\t'.join([ self.CHROM, str( self.POS ), self.ID, self.REF, self.ALT, str( self.QUAL ),\
@@ -63,12 +90,15 @@ class VCF:
 		self.filename = filename
 		self.header = []
 		self.header_line_count = 0
+		self.contigs = set()
 		with open(filename, 'r') as vcf:
 			for line in vcf:
-				if line[0] == '#':
+				if line[0] == '#':  # this would be a header line
 					self.header.append(line)
 					self.header_line_count += 1
-				else:
+					if 'contig' in line:
+						self.contigs.add( line.split(',')[0].split('ID=')[1] )
+				else: # this should be the first line after the header which has column names
 					self.num_samples = len(line.strip().split('\t')) - 9
 					self.format = VCFentry(line).FORMAT
 					self.info = [ key for key in VCFentry(line).INFO.keys() ]
@@ -118,7 +148,7 @@ class VCF:
 	def filter(self, output, quality=0, variant_type=['snp', 'indel'], genotype=False, chrom=False, columns=(), coords=(0,1e10) ):
 		"""
 		Class method to generate a new vcf file containing only calls passing a specified filter.
-		If genotype as specified (choices: homozygous, heterozygous) you must also specify a range of columns
+		If genotype is specified (choices: homozygous, heterozygous) you must also specify a range of columns
 		(as a tuple) to check for multi-sample vcf files. By default, all columns will be checked. Current behavior
 		for genotype=heterozyous will output variants if ANY sample is heterozygous at that locus. For genotype=
 		homozygous, the line is written to output only if ALL samples are homozgous at that site.
